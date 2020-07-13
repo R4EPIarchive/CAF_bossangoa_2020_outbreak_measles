@@ -1,0 +1,2320 @@
+---
+title: "Measles outbreak report"
+output:
+  word_document:
+    keep_md: yes
+  pdf_document: default
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+<!-- # Introduction to this template -->
+
+<!-- This is a template which can be used to create an automated outbreak situation -->
+<!-- report for measles.  -->
+
+<!-- - It is organised by time, place and person.  -->
+<!-- For a more detailed explanation of this template, please visit https://r4epis.netlify.com/outbreaks -->
+<!-- - Feedback and suggestions are welcome at the [GitHub issues page](https://github.com/R4EPI/sitrep/issues) -->
+<!-- - Text within <! > will not show in your final document. These comments are used -->
+<!-- to explain the template. You can delete them if you want. -->
+
+<!-- <!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+<!-- This comment will not show up when you knit the document. -->
+
+<!-- A comment with a title with slashes indicates a name of a code chunk. -->
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ --> 
+
+
+<!-- ## Installing and loading required packages  -->
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// setup \\\
+--------------------------------------------------------------------------------
+
+Several packages are required for different aspects of  analysis with *R*. 
+You will need to install these before starting. 
+
+These packages can be quite large and may take a while to download in the
+field. If you have access to a USB key with these packages, it makes sense to
+copy and paste the packages into your computer's R package library 
+(run the command .libPaths() to see the folder path). 
+
+For help installing packages, please visit https://r4epis.netlify.com/welcome
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+```{r setup, include=FALSE, results='hide', message=FALSE, warning=FALSE}
+## hide all code chunks in the output, but show errors
+knitr::opts_chunk$set(echo = FALSE,       # hide all code chunks in output
+                      error = TRUE,       # show errors if they appear, but don't stop
+                      fig.width = 6*1.25, # Figure width
+                      fig.height = 6      # Figure height
+                     )
+
+
+
+## set default NA to - in output, define figure width/height
+options(knitr.kable.NA = "-")
+
+
+
+## Installing required packages for this template
+required_packages <- c("knitr",       # create output docs
+                       "here",        # find your files
+                       "dplyr",       # clean/shape data
+                       "forcats",     # clean/shape data
+                       "stringr",     # clean text
+                       "rio",         # read in data
+                       "ggplot2",     # create plots and charts
+                       "sitrep",      # MSF field epi functions
+                       "linelist",    # Functions for cleaning/standardising data
+                       "incidence",   # create epicurves
+                       "aweek",       # define epi weeks
+                       "epitrix",     # epi helpers and tricks
+                       "sf",          # encode spatial vector data
+                       "ggspatial",   # plot maps
+                       "flextable",    # making tables
+                       "RecordLinkage") # Removing duplicates
+
+for (pkg in required_packages) {
+  # install packages if not already present
+  if (!pkg %in% rownames(installed.packages())) {
+    install.packages(pkg)
+  }
+  
+  # load packages to this current session 
+  library(pkg, character.only = TRUE)
+}
+
+
+
+## Set default options for plots and charts
+
+## set default text size to 16 for plots
+## give classic black/white axes for plots
+ggplot2::theme_set(theme_classic(base_size = 18))
+
+## sets the theme in ggplot for epicurves
+epicurve_theme <- theme(
+  axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+  legend.title = element_blank(),
+  panel.grid.major.x = element_line(color = "grey60", linetype = 3),
+  panel.grid.major.y = element_line(color = "grey60", linetype = 3))
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// define_current_week \\\
+--------------------------------------------------------------------------------
+
+You need to set the week you want to report on. Generally, this is the previous
+week. Put it below.
+
+aweek::set_week_start will define the beginning of the week. The standard is
+Monday.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r define_current_week, message = FALSE, warning = FALSE, echo = FALSE}
+## set the day that defines the beginning of your epiweek.
+aweek::set_week_start("Monday")
+
+## set current week 
+reporting_week <- aweek::as.aweek("2020-W22")
+
+## set one week prior to reporting week
+last_reporting_week <- as.aweek("2020-W21")
+
+four_weeks_earlier <- as.aweek("2020-W19")
+
+## sets the labels in ggplot for the epicurves
+epicurve_labels <- labs(x = "Calendar week", 
+                        y = "Cases (n)", 
+                        title = "Cases by week of consultation",
+                        subtitle = str_glue("Source: MSF data from {reporting_week}")
+                       ) 
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// read_nonDHIS_data \\\
+--------------------------------------------------------------------------------
+
+This section is for data not from DHIS2.
+If you have already loaded data from DHIS2, go to read_population_data.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+```{r read_nonDHIS_data, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Health centre data
+ linelist_hc_raw <- rio::import(here::here("data", "raw",
+                                        "HC June 04_ W 22_line list.xlsx"),
+                             sheet = "Linelist CS") 
+
+
+## Hospital data
+ linelist_hosp_raw <- rio::import(here::here("data", "raw",
+                                        "Hosp_June_05_W22_Line list.xlsx"),
+                             sheet = "Line list Hosp") 
+ 
+ 
+ ## Community data
+linelist_comm_raw <- rio::import(here::here("data", "raw",
+                                        "community+Graphs_April 27_W17_no outreach week18.xls"),
+                             sheet = "Linelist2") 
+
+
+
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Health Centre data \\\
+--------------------------------------------------------------------------------
+
+This section is for data for Health centres
+
+* We first convert all variable names to lower case using epitrix and clean_variable_names() and clean_data() to clean the answer options = lower case and _ between words instead of spaces
+
+* we map the variable names we have to the MSF measles dictionary
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+
+```{r hc_data, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Clean column names ----------------------------------------------------------
+## make a copy of your orginal dataset and name it ll_hosphc_comm
+ linelist_hc_cleaned <- linelist_hc_raw
+# 
+# ## define clean variable names using clean_labels from the epitrix package
+ cleaned_colnames <- epitrix::clean_labels(colnames(linelist_hc_raw))
+# 
+# ## overwrite variable names with defined clean names
+ colnames(linelist_hc_cleaned) <- cleaned_colnames
+ 
+ linelist_hc_cleaned <- linelist_hc_cleaned %>% 
+   clean_variable_names() %>% 
+   clean_data()
+ 
+ 
+ ## Match column names ---------------------------------------------------------
+## This step helps you match your variables to the standard variables.
+## This step will require some patience. Courage!
+
+## Use the function msf_dict_rename_helper() to create a template based on the
+## AJS dictionary. This will copy a rename command like the one above to your
+## clipboard.
+
+# msf_dict_rename_helper("Measles")
+
+## Paste the result below and your column names to the matching variable.
+## Be careful! You still need to be aware of what each variable means and what
+## values it takes.
+## If there are any variables that are in the MSF dictionary that are not in
+## your data set, then you should comment them out, but be aware that some
+## analyses may not run because of this. 
+ 
+ 
+ ## Need to change variable names to ensure no duplication of variable names
+ ## There is already an age months variable created, copy it to a new name and delete original
+ linelist_hc_cleaned <- linelist_hc_cleaned %>% 
+   mutate(age_months2 = age_months) %>% 
+   select(-age_months)
+
+## Add the appropriate column names after the equals signs
+
+linelist_hc_cleaned <- rename(linelist_hc_cleaned,
+  acute_otitis_media              = otite_moyenne_aigue, # BOOLEAN           (REQUIRED)
+  # age_days                        =   , # INTEGER_POSITIVE  (REQUIRED)
+  age_months                      =  age_mois  , # INTEGER_POSITIVE  (REQUIRED)
+  age_years                       =  age_ans , # INTEGER_POSITIVE  (REQUIRED)
+  candidiasis                     =  candidose, # BOOLEAN           (REQUIRED)
+  # case_number                     =   , # TEXT              (REQUIRED)
+  # cough                           =   , # BOOLEAN           (REQUIRED)
+  # croup                           =   , # BOOLEAN           (REQUIRED)
+  date_of_consultation_admission  =   date_de_consultation_detection, # DATE              (REQUIRED)
+  date_of_exit                    =   date_de_sorti_deces, # DATE              (REQUIRED)
+  date_of_last_vaccination        =   date_du_derniere_vaccination, # DATE              (REQUIRED)
+  date_of_onset                   =   date_de_debut_de_symptomes, # DATE              (REQUIRED)
+  # encephalitis                    =   , # BOOLEAN           (REQUIRED)
+  # exit_status                     =   , # TEXT              (REQUIRED)
+  # fever                           =   , # BOOLEAN           (REQUIRED)
+  # late_complications              =   , # BOOLEAN           (REQUIRED)
+  # maculopapular_rash              =   , # BOOLEAN           (REQUIRED)
+  # nasal_discharge                 =   , # BOOLEAN           (REQUIRED)
+  # patient_facility_type           =   , # TEXT              (REQUIRED)
+  patient_origin                  =   origine_commune_sous_prefecture, # ORGANISATION_UNIT (REQUIRED)
+  previously_vaccinated           =   vaccine, # TEXT              (REQUIRED)
+  seizure_episodes                =   convulsions, # BOOLEAN           (REQUIRED)
+  severe_oral_lesions             =   lesions_buccales_severes, # BOOLEAN           (REQUIRED)
+  severity_of_illness             =   severite_du_maladie_rougeole, # TEXT              (REQUIRED)
+  sex                             =   sexe_m_f, # TEXT              (REQUIRED)
+  # time_to_death                   =   , # TEXT              (REQUIRED)
+  # xerophthalmia                   =   , # BOOLEAN           (REQUIRED)
+  # arrival_date_in_area_if_3m      =   , # DATE              (optional)
+  # baby_born_with_complications    =   , # BOOLEAN           (optional)
+  # contact_history                 =   , # TEXT              (optional)
+  # dehydration_level_at_admission  =   , # TEXT              (optional)
+  # delivery_event                  =   , # TRUE_ONLY         (optional)
+  # detected_by                     =   , # TEXT              (optional)
+  # event_file_type                 =   , # TEXT              (optional)
+  # foetus_alive_at_admission       =   , # TEXT              (optional)
+  malaria_rdt_at_admission        =   paludisme_rdt, # TEXT              (optional)
+  # msf_involvement                 =   , # TEXT              (optional)
+  nutrition_status_at_admission   =   statut_nutritionnel, # TEXT              (optional)
+  other_eye_complications         =   , # TEXT              (optional)
+  patient_origin_free_text        =   , # TEXT              (optional)
+  pneumonia                       =  pneumonie , # TEXT              (optional)
+  # pregnancy_outcome_at_exit       =   , # TEXT              (optional)
+  # pregnant                        =   , # TEXT              (optional)
+  # prescribed_antibiotics          =   , # BOOLEAN           (optional)
+  # prescribed_vitamin_a            =   , # BOOLEAN           (optional)
+  previous_vaccine_doses_received =   combien_des_doses_de_vaccin_recues, # TEXT              (optional)
+  # residential_status              =   , # TEXT              (optional)
+  # residential_status_brief        =   , # TEXT              (optional)
+  treatment_facility_name         =   nom_de_la_fosa, # TEXT              (optional)
+  # treatment_facility_site         =   , # TEXT              (optional)
+  # treatment_location              =   , # ORGANISATION_UNIT (optional)
+  # trimester                       =     # TEXT              (optional)
+)
+
+
+## Select the key variables of interest to merge with all the other datasets
+linelist_hc_cleaned <- linelist_hc_cleaned %>% 
+  select(id_epidemique_nouvelle, nom, prenom, age_years, age_months, sex, 
+         patient_origin, date_of_consultation_admission, patient_refere, 
+         treatment_facility_name, date_of_onset, candidiasis, severe_oral_lesions,
+         acute_otitis_media, seizure_episodes, malaria_rdt_at_admission,
+         nutrition_status_at_admission, severity_of_illness,
+         date_of_exit, statut_finale_si_hospitalise, previously_vaccinated,
+         date_of_last_vaccination) %>% 
+  mutate(source = "health_centre") %>%  # create a source variable to be able to distinguish the data
+  mutate(exit_status = 0)
+
+
+
+
+
+
+```
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Hospital data \\\
+--------------------------------------------------------------------------------
+
+This section is for for hospital data
+
+* We first convert all variable names to lower case using epitrix and clean_variable_names() and clean_data() to clean the answer options = lower case and _ between words instead of spaces
+
+* we map the variable names we have to the MSF measles dictionary
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+```{r hospital_data, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Clean column names ----------------------------------------------------------
+## make a copy of your orginal dataset and name it linelist_hosp_cleaned
+ linelist_hosp_cleaned <- linelist_hosp_raw
+# 
+# ## define clean variable names using clean_labels from the epitrix package
+ cleaned_colnames <- epitrix::clean_labels(colnames(linelist_hosp_raw))
+# 
+# ## overwrite variable names with defined clean names
+ colnames(linelist_hosp_cleaned) <- cleaned_colnames
+ 
+ linelist_hosp_cleaned <- linelist_hosp_cleaned %>% 
+   clean_variable_names() %>% 
+   clean_data()
+ 
+ 
+ ## Match column names ---------------------------------------------------------
+## This step helps you match your variables to the standard variables.
+## This step will require some patience. Courage!
+
+## Use the function msf_dict_rename_helper() to create a template based on the
+## AJS dictionary. This will copy a rename command like the one above to your
+## clipboard.
+
+# msf_dict_rename_helper("Measles")
+
+## Paste the result below and your column names to the matching variable.
+## Be careful! You still need to be aware of what each variable means and what
+## values it takes.
+## If there are any variables that are in the MSF dictionary that are not in
+## your data set, then you should comment them out, but be aware that some
+## analyses may not run because of this. 
+ 
+ 
+ ## Need to change variable names to ensure no duplication of variable names
+ ## There is already an age months variable created, copy it to a new name and delete original
+ linelist_hosp_cleaned <- linelist_hosp_cleaned %>% 
+   mutate(age_months2 = age_months) %>% 
+   select(-age_months)
+
+## Add the appropriate column names after the equals signs
+
+linelist_hosp_cleaned <- rename(linelist_hosp_cleaned,
+  acute_otitis_media              = otite_moyenne_aigue, # BOOLEAN           (REQUIRED)
+  # age_days                        =   , # INTEGER_POSITIVE  (REQUIRED)
+  age_months                      =  age_mois  , # INTEGER_POSITIVE  (REQUIRED)
+  age_years                       =  age_ans , # INTEGER_POSITIVE  (REQUIRED)
+  candidiasis                     =  candidose, # BOOLEAN           (REQUIRED)
+  # case_number                     =   , # TEXT              (REQUIRED)
+  # cough                           =   , # BOOLEAN           (REQUIRED)
+  # croup                           =   , # BOOLEAN           (REQUIRED)
+  date_of_consultation_admission  =   date_de_consultation_detection, # DATE              (REQUIRED)
+  date_of_exit                    =   date_de_sorti_deces, # DATE              (REQUIRED)
+  date_of_last_vaccination        =   date_du_derniere_vaccination, # DATE              (REQUIRED)
+  date_of_onset                   =   date_de_debut_de_symptomes, # DATE              (REQUIRED)
+  # encephalitis                    =   , # BOOLEAN           (REQUIRED)
+  exit_status                     =   code_deces, # TEXT              (REQUIRED)
+  # fever                           =   , # BOOLEAN           (REQUIRED)
+  # late_complications              =   , # BOOLEAN           (REQUIRED)
+  # maculopapular_rash              =   , # BOOLEAN           (REQUIRED)
+  # nasal_discharge                 =   , # BOOLEAN           (REQUIRED)
+  # patient_facility_type           =   , # TEXT              (REQUIRED)
+  patient_origin                  =   origine_commune_sous_prefecture, # ORGANISATION_UNIT (REQUIRED)
+  previously_vaccinated           =   vaccine, # TEXT              (REQUIRED)
+  seizure_episodes                =   convulsions, # BOOLEAN           (REQUIRED)
+  severe_oral_lesions             =   lesions_buccales_severes, # BOOLEAN           (REQUIRED)
+  severity_of_illness             =   severite_du_maladie_rougeole, # TEXT              (REQUIRED)
+  sex                             =   sexe_m_f, # TEXT              (REQUIRED)
+  # time_to_death                   =   , # TEXT              (REQUIRED)
+  # xerophthalmia                   =   , # BOOLEAN           (REQUIRED)
+  # arrival_date_in_area_if_3m      =   , # DATE              (optional)
+  # baby_born_with_complications    =   , # BOOLEAN           (optional)
+  # contact_history                 =   , # TEXT              (optional)
+  # dehydration_level_at_admission  =   , # TEXT              (optional)
+  # delivery_event                  =   , # TRUE_ONLY         (optional)
+  # detected_by                     =   , # TEXT              (optional)
+  # event_file_type                 =   , # TEXT              (optional)
+  # foetus_alive_at_admission       =   , # TEXT              (optional)
+  malaria_rdt_at_admission        =   paludisme_rdt, # TEXT              (optional)
+  # msf_involvement                 =   , # TEXT              (optional)
+  nutrition_status_at_admission   =   statut_nutritionnel, # TEXT              (optional)
+  other_eye_complications         =   , # TEXT              (optional)
+  patient_origin_free_text        =   , # TEXT              (optional)
+  pneumonia                       =  pneumonie , # TEXT              (optional)
+  # pregnancy_outcome_at_exit       =   , # TEXT              (optional)
+  # pregnant                        =   , # TEXT              (optional)
+  # prescribed_antibiotics          =   , # BOOLEAN           (optional)
+  # prescribed_vitamin_a            =   , # BOOLEAN           (optional)
+  previous_vaccine_doses_received =   combien_des_doses_de_vaccin_recues, # TEXT              (optional)
+  # residential_status              =   , # TEXT              (optional)
+  # residential_status_brief        =   , # TEXT              (optional)
+  treatment_facility_name         =   nom_de_la_fosa, # TEXT              (optional)
+  # treatment_facility_site         =   , # TEXT              (optional)
+  # treatment_location              =   , # ORGANISATION_UNIT (optional)
+  # trimester                       =     # TEXT              (optional)
+)
+
+
+## Select the key variables of interest to merge with all the other datasets
+linelist_hosp_cleaned <- linelist_hosp_cleaned %>% 
+  select(id_epidemique_nouvelle, nom, prenom, age_years, age_months, sex, 
+         patient_origin, date_of_consultation_admission, 
+         treatment_facility_name, date_of_onset, candidiasis,
+         severe_oral_lesions,
+         acute_otitis_media, seizure_episodes, malaria_rdt_at_admission,
+         nutrition_status_at_admission, severity_of_illness,
+         date_of_exit, exit_status, statut_finale_si_hospitalise,
+         previously_vaccinated,date_of_last_vaccination) %>% 
+  mutate(source = "hospital") %>%  # create a source variable to be able to distinguish the data
+  mutate(patient_refere = NA_character_)
+
+
+
+```
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Community data \\\
+--------------------------------------------------------------------------------
+
+This section is for data for Health centres
+
+* We first convert all variable names to lower case using epitrix and clean_variable_names() and clean_data() to clean the answer options = lower case and _ between words instead of spaces
+
+* we map the variable names we have to the MSF measles dictionary
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+
+```{r hc_data_comm, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Clean column names ----------------------------------------------------------
+## make a copy of your orginal dataset and name it ll_hosphc_comm
+ linelist_comm_cleaned <- linelist_comm_raw
+# 
+# ## define clean variable names using clean_labels from the epitrix package
+ cleaned_colnames <- epitrix::clean_labels(colnames(linelist_comm_raw))
+# 
+# ## overwrite variable names with defined clean names
+ colnames(linelist_comm_cleaned) <- cleaned_colnames
+ 
+ linelist_comm_cleaned <- linelist_comm_cleaned %>% 
+   clean_variable_names() %>% 
+   clean_data()
+ 
+ 
+ ## Match column names ---------------------------------------------------------
+## This step helps you match your variables to the standard variables.
+## This step will require some patience. Courage!
+
+## Use the function msf_dict_rename_helper() to create a template based on the
+## AJS dictionary. This will copy a rename command like the one above to your
+## clipboard.
+
+# msf_dict_rename_helper("Measles")
+
+## Paste the result below and your column names to the matching variable.
+## Be careful! You still need to be aware of what each variable means and what
+## values it takes.
+## If there are any variables that are in the MSF dictionary that are not in
+## your data set, then you should comment them out, but be aware that some
+## analyses may not run because of this. 
+ 
+ 
+ ## Need to change variable names to ensure no duplication of variable names
+ ## There is already an age months variable created, copy it to a new name and delete original
+ linelist_comm_cleaned <- linelist_comm_cleaned %>% 
+   mutate(age_months2 = age_months) %>% 
+   select(-age_months)
+
+## Add the appropriate column names after the equals signs
+
+linelist_comm_cleaned <- rename(linelist_comm_cleaned,
+  acute_otitis_media              = otitemoyenneaigue, # BOOLEAN           (REQUIRED)
+  # age_days                        =   , # INTEGER_POSITIVE  (REQUIRED)
+  age_months                      =  age_mois  , # INTEGER_POSITIVE  (REQUIRED)
+  age_years                       =  age_ans , # INTEGER_POSITIVE  (REQUIRED)
+  candidiasis                     =  candidose, # BOOLEAN           (REQUIRED)
+  # case_number                     =   , # TEXT              (REQUIRED)
+  # cough                           =   , # BOOLEAN           (REQUIRED)
+  # croup                           =   , # BOOLEAN           (REQUIRED)
+  date_of_consultation_admission  =   date_de_consultation_detection, # DATE              (REQUIRED)
+  date_of_exit                    =   date_de_sorti_deces, # DATE              (REQUIRED)
+  date_of_last_vaccination        =   date_du_derniere_vaccination, # DATE              (REQUIRED)
+  date_of_onset                   =   date_de_debut_de_symptomes, # DATE              (REQUIRED)
+  # encephalitis                    =   , # BOOLEAN           (REQUIRED)
+  exit_status                     =  code_deces , # TEXT              (REQUIRED)
+  # fever                           =   , # BOOLEAN           (REQUIRED)
+  # late_complications              =   , # BOOLEAN           (REQUIRED)
+  # maculopapular_rash              =   , # BOOLEAN           (REQUIRED)
+  # nasal_discharge                 =   , # BOOLEAN           (REQUIRED)
+  # patient_facility_type           =   , # TEXT              (REQUIRED)
+  patient_origin                  =   origine_commune_sous_prefecture, # ORGANISATION_UNIT (REQUIRED)
+  previously_vaccinated           =   vaccine, # TEXT              (REQUIRED)
+  seizure_episodes                =   convulsions, # BOOLEAN           (REQUIRED)
+  severe_oral_lesions             =   lesions_buccales_severes, # BOOLEAN           (REQUIRED)
+  severity_of_illness             =   severite_du_maladie_rougeole, # TEXT              (REQUIRED)
+  sex                             =   sexe_m_f, # TEXT              (REQUIRED)
+  # time_to_death                   =   , # TEXT              (REQUIRED)
+  # xerophthalmia                   =   , # BOOLEAN           (REQUIRED)
+  # arrival_date_in_area_if_3m      =   , # DATE              (optional)
+  # baby_born_with_complications    =   , # BOOLEAN           (optional)
+  # contact_history                 =   , # TEXT              (optional)
+  # dehydration_level_at_admission  =   , # TEXT              (optional)
+  # delivery_event                  =   , # TRUE_ONLY         (optional)
+  # detected_by                     =   , # TEXT              (optional)
+  # event_file_type                 =   , # TEXT              (optional)
+  # foetus_alive_at_admission       =   , # TEXT              (optional)
+  malaria_rdt_at_admission        =   paludismerdt, # TEXT              (optional)
+  # msf_involvement                 =   , # TEXT              (optional)
+  nutrition_status_at_admission   =   statutnutritionnel, # TEXT              (optional)
+  other_eye_complications         =   , # TEXT              (optional)
+  patient_origin_free_text        =   , # TEXT              (optional)
+  pneumonia                       =  pneumonie , # TEXT              (optional)
+  # pregnancy_outcome_at_exit       =   , # TEXT              (optional)
+  # pregnant                        =   , # TEXT              (optional)
+  # prescribed_antibiotics          =   , # BOOLEAN           (optional)
+  # prescribed_vitamin_a            =   , # BOOLEAN           (optional)
+  previous_vaccine_doses_received =   combien_des_doses_de_vaccin_recues, # TEXT              (optional)
+  # residential_status              =   , # TEXT              (optional)
+  # residential_status_brief        =   , # TEXT              (optional)
+  treatment_facility_name         =   nom_de_la_fosa, # TEXT              (optional)
+  # treatment_facility_site         =   , # TEXT              (optional)
+  # treatment_location              =   , # ORGANISATION_UNIT (optional)
+  # trimester                       =     # TEXT              (optional)
+)
+
+## Select the key variables of interest to merge with all the other datasets
+linelist_comm_cleaned <- linelist_comm_cleaned %>% 
+  select("id_epidemique_nouvelle" = idepidemique, nom, prenom, age_years, 
+         age_months, sex, patient_origin, date_of_consultation_admission, 
+         "patient_refere" = transfereaveclequipeverslhop, 
+         treatment_facility_name, date_of_onset, candidiasis, 
+         severe_oral_lesions, acute_otitis_media, seizure_episodes,
+         malaria_rdt_at_admission, nutrition_status_at_admission, 
+         severity_of_illness,  date_of_exit, exit_status, 
+         statut_finale_si_hospitalise, previously_vaccinated, 
+         date_of_last_vaccination) %>% 
+  mutate(source = "community") %>%   # create a source variable to be able to distinguish the data
+  mutate(date_of_last_vaccination = NA_character_) %>% 
+  mutate(date_of_onset = NA_character_) %>% 
+  mutate(date_of_exit = NA_character_)
+
+
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// read_population_data \\\
+--------------------------------------------------------------------------------
+
+This template uses population data to calculate things like incidence.
+
+There are three options:
+- You can read in a spreadsheet with age group and region data.
+- You can put in the specific populations into the gen_population function. 
+- If you have the total or regional populations, you can estimate the age group
+from proportions.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+```{r read_population_data, message = FALSE, warning = FALSE, echo = FALSE}
+## Read data -------------------------------------------------------------------
+## This step reads in your population data from Excel.
+## You may need to rename your columns.
+population_data_raw <- rio::import(here::here("data",
+                                          "raw", 
+                                          "Hosp_April_21 + Graphs_W16 for Analysis_PK+dropdown list.xlsx"),
+                               which = "GIS") 
+
+# Create a clean version with only essential variables
+# remove empty rows
+population_data_cl <- population_data_raw %>% 
+  clean_data() %>% 
+  select(nom_prefecture, nom_sous_prefecture, nom_commune, pop2019) %>% 
+  janitor::remove_empty("rows") %>% 
+  mutate(pop2019 = round(pop2019, digits = 0))
+
+
+## Create population age structure based on Bangui data
+population_age <- data.frame(age_group = c("<6 months", "6-11 months", 
+                                              "12-59 months", "5-9 years", 
+                                              "10-14 years", "15 + years"),
+                                proportion = c(0.02, 0.02, 0.18, 0.18, 0.16, 0.44))
+
+
+## Create population data broken down by age
+## Create variable by age group by multipliying pop total by proportion
+population_data_cl <- population_data_cl %>% 
+  mutate(`<6 months` = round(pop2019*0.02, digits = 0)) %>% 
+  mutate(`6-11 months` = round(pop2019*0.02, digits = 0)) %>% 
+  mutate(`12-59 months` = round(pop2019*0.18, digits = 0)) %>% 
+  mutate(`5-9 years` = round(pop2019*0.18, digits = 0)) %>% 
+  mutate(`10-14 years` = round(pop2019*0.16, digits = 0)) %>% 
+  mutate(`15 + years` = round(pop2019*0.44, digits = 0)) 
+
+```
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// prepare_population_data \\\
+--------------------------------------------------------------------------------
+
+Calculate population numbers by:
+- Commune
+- sous prefecture
+- total
+- age-specific
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+```{r prepare_population_data, message = FALSE, warning = FALSE, echo = FALSE}
+
+# Sub prefecture population counts
+population_sous_pref <- population_data_cl %>% 
+  group_by(nom_sous_prefecture) %>% 
+  summarise(count = sum(pop2019),
+            `<6 months` = sum(`<6 months`, na.rm = TRUE),
+            `6-11 months` = sum(`6-11 months`, na.rm = TRUE),
+            `12-59 months` = sum(`12-59 months`, na.rm = TRUE),
+            `5-9 years` = sum(`5-9 years`, na.rm = TRUE),
+            `10-14 years` = sum(`10-14 years`, na.rm = TRUE),
+            `15 + years` = sum(`15 + years`, na.rm = TRUE)) %>% 
+  mutate(level = "sp") %>% 
+  rename(geo = "nom_sous_prefecture")
+
+# Commune pop counts
+population_commune <- population_data_cl %>% 
+  select(nom_sous_prefecture,nom_commune, pop2019,`<6 months`,
+         `6-11 months`,`12-59 months`, `5-9 years`, 
+         `10-14 years`, `15 + years` ) %>% 
+  mutate(level = "commu") %>% 
+  rename(geo = "nom_commune",
+         count = "pop2019")
+
+
+# Combine sub prefecture and commune counts
+population_counts <- bind_rows(population_sous_pref, population_commune)
+
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// browse_data \\\
+--------------------------------------------------------------------------------
+
+You'll want to look at your data. Here are a few ways you can explore.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r browse_data, eval = FALSE}
+## view the first ten rows of data
+#  head(linelist_hosp_cleaned, n = 10)
+#  head(linelist_hc_cleaned, n = 10)
+# 
+# 
+# # ## overview of variable types and contents
+# str(linelist_hosp_cleaned) # hospital has dates saved as characters
+# str(linelist_hc_cleaned)
+
+
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This part of the script will create and clean variables in your data.
+
+All your cleaning and variable creation should happen in these chunks.
+That way, in case something goes wrong, you can push the small arrow at the top
+of the chunk to re-run all the code chunks up to the current one.
+
+The chunks are:
+- standardise_dates -- will set up and clean dates.
+- create_age_group  -- creates the age group variables from age
+- create_vars       -- creates variables based on other variables
+- factor_vars       -- helps clean factor variables
+- vector_vars       -- creates groups of variables for easy use
+- standardise_values -- standardise the value of various variables
+- remove_duplicates  -- remove any duplicate cases i.e. those referred from HC to Hospital
+
+
+You must adapt this section according to your data!
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// standardise_dates \\\
+--------------------------------------------------------------------------------
+
+This chunk will help you set up and clean your date variables.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r standardise_dates, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Convert date_of_last_vaccination to a date/character
+## use the guess_dates() function to make a first pass at date variables. 
+ linelist_hc_cleaned <- linelist_hc_cleaned %>%
+   mutate(date_of_last_vaccination = as.Date(date_of_last_vaccination)) %>% 
+   mutate_at(vars(matches("date|Date")), linelist::guess_dates, 
+           error_tolerance = 0.5)
+ #  #  Subtracted the days from date of consultation and replaced with value in date_of_onset
+ #  mutate(date_of_onset = case_when(
+ # is.na(onset_error_days) == F ~  date_of_consultation_admission - onset_error_days,
+ #    TRUE ~ date_of_onset
+ #  ))
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// Data cleaning \\\
+--------------------------------------------------------------------------------
+
+- Fixing format errors identified all_equal
+- creating variables that are present in one dataset and absent from another
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+```{r format_errors_missing_vars, message = FALSE, warning = FALSE, echo = FALSE}
+
+# Identify differences between two databases
+ # all_equal(linelist_hc_cleaned, linelist_hosp_cleaned, ignore_col_order = TRUE)
+ # all_equal(linelist_hc_cleaned, linelist_comm_cleaned, ignore_col_order = TRUE)
+
+ 
+# Convert statut_finalise_si_hospitalise from logical to character in linelist_hc
+ linelist_hc_cleaned <- linelist_hc_cleaned %>% 
+   mutate(statut_finale_si_hospitalise = as.character(statut_finale_si_hospitalise))
+ 
+# Convert format differences of linelist_comm_cleaned to match the other databases
+ linelist_comm_cleaned <- linelist_comm_cleaned %>% 
+   mutate(age_years = as.numeric(age_years),
+          patient_origin = as.character(patient_origin),
+          seizure_episodes = as.character(seizure_episodes),
+          age_months = as.numeric(age_months),
+          exit_status = as.numeric(exit_status),
+          date_of_last_vaccination = as.Date(date_of_last_vaccination),
+          age_months = as.numeric(age_months),
+          date_of_onset = as.Date(date_of_onset),
+          date_of_exit = as.Date(date_of_exit),
+          exit_status = as.numeric(exit_status))
+   
+
+# Create the combined hospital and HC linelist and call it ll_hosphc_comm
+ll_hosphc_comm <- bind_rows(linelist_hc_cleaned, linelist_hosp_cleaned, linelist_comm_cleaned)
+
+
+## Create epiweek variable -----------------------------------------------------
+## This step creates an epiweek variable from the date of onset.
+## You can use date_of_consultation_admission if you are missing many date_of_onset.
+
+ll_hosphc_comm$epiweek <- aweek::date2week(ll_hosphc_comm$date_of_consultation_admission, 
+                                             floor_day = TRUE, 
+                                             factor = TRUE)
+
+
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// create_age_group health facility data \\\ 
+--------------------------------------------------------------------------------
+
+This chunk will help you set up your age group variable.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r create_age_group, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Age group variables ----------------------------------------------------------
+## This step shows you how to create categorical variables from numeric variables.
+## We have some intermediate steps on the way.
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate( age_years = case_when(
+    is.na(age_years)                     ~ as.numeric(age_months / 12),
+    TRUE                                 ~ as.numeric(age_years)
+  ))
+
+
+
+## create age group variable for under 5 years based on months
+ll_hosphc_comm$age_group_mon <- age_categories(ll_hosphc_comm$age_months, 
+                                                 breakers = c(0, 6, 9, 12, 24), 
+                                                 ceiling = TRUE)
+
+# ## create an age group variable by specifying categorical breaks
+# ll_hosphc_comm$age_group <- age_categories(ll_hosphc_comm$age_years, 
+#                                              breakers = c(0, 1, 5, 10, 15))
+
+
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate(age_group = factor(case_when(
+    age_months < 6 ~ "<6 months",
+    age_months >= 6 & age_months < 12 ~ "6-11 months",
+    age_years >= 1 & age_years < 5 ~ "12-59 months",
+    age_years >=5 & age_years < 10 ~ "5-9 years",
+    age_years >=10 & age_years < 15 ~ "10-14 years",
+    age_years >= 15 ~ "15 + years",
+    TRUE ~ NA_character_
+  ),
+  levels = c("<6 months", "6-11 months", "12-59 months",
+             "5-9 years", "10-14 years",
+             "15 + years")
+  ))
+
+```
+
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// create_vars \\\
+--------------------------------------------------------------------------------
+
+This chunk will help you construct new variables from other variables. It
+includes numeric, factor, and character vectors.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r create_vars, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Numeric variables -----------------------------------------------------------
+## This step creates a variable for number of days under observation.
+## You can adapt this step to create other calculated variables
+
+## create number of days under observation
+ll_hosphc_comm <- mutate(ll_hosphc_comm, 
+                           obs_days = as.numeric(date_of_exit - 
+                                                   date_of_consultation_admission))
+
+
+
+
+
+## Factor (categorical) variables ----------------------------------------------
+
+## This step creates a variable from another character/factor variable
+## You can adapt this step to create other calculated variables
+ll_hosphc_comm$DIED <- if_else(ll_hosphc_comm$statut_finale_si_hospitalise == "decede_en_l_etablissement" | 
+                                 ll_hosphc_comm$statut_finale_si_hospitalise == "mort_a_l_arrivee", TRUE, FALSE)
+
+
+## Clean up patient origin variable
+## adding commu/sp if missing and matching spelling with geo database
+
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate(patient_origin = case_when(
+    patient_origin == "ouham_bac" ~ "ouham_bac_commu",
+    patient_origin == "ndoro_mboli" ~ "ndoro_mboli_commu",
+    patient_origin == "koro_mpoko_commu" ~ "koro_m_poko_commu",
+    patient_origin == "benzambe_commu" ~ "ben_zambe_commu",
+    patient_origin == "nana_bakassa_sp" ~ "nana_bakassa_commu",   # As nana bakassa is both commune and SP, easier to code it as a commune here
+    patient_origin == "0" | patient_origin == "unknown_commu" ~ "unknown",
+    TRUE ~ patient_origin
+  ))
+
+
+## Extract the geographic level from patient origin variable
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate(level = case_when(
+    grepl("sp", patient_origin,) ~ "sp",
+    grepl("commu",patient_origin,) ~ "commu",
+    TRUE ~ patient_origin
+  )) %>% 
+  mutate(geo = case_when(
+   patient_origin %in% c("ben_zambe_commu", "bossangoa_commu", "koro_m_poko_commu", 
+                         "ndoro_mboli_commu", "ouham_bac_commu", "soumbe_commu", "batangafo_commu",
+                         "boguila_commu", "markounda_commu", "nana_bakassa_commu") 
+      ~ str_extract(patient_origin, ".+?(?=_commu)"), # this extracts the text before _commu
+   TRUE ~ patient_origin
+  ))
+  
+
+## Recode patient origin variable as sous - prefecture by cleaning using the data dictionary
+
+ll_hosphc_comm$sous_prefecture <- ll_hosphc_comm$patient_origin
+
+
+## Create commune variable by only including those that have commu in name or sous prefectures that only consist of 1 commune 
+
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate(commune = case_when(
+    patient_origin == "markounda_commu" ~ "nana_markounda",
+    grepl("commu", patient_origin) ~ str_replace(patient_origin, "_commu", ""),
+    patient_origin %in% c("nana_bakassa_sp", "koui_sp", "nangha_boguila_sp") ~ str_replace(patient_origin, "_sp", ""),
+    TRUE ~ "unknown"
+  ))
+
+
+```
+  
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// factor_vars \\\
+--------------------------------------------------------------------------------
+
+This chunk will help you clean factor variables.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r factor_vars, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Force missing values to NA
+## important for sex to generate age pyramids
+ll_hosphc_comm$sex <- fct_recode(ll_hosphc_comm$sex, 
+                                   NULL = "Unknown/unspecified")
+
+
+## Label empty age_group values as "Unknown/unspecified
+ll_hosphc_comm$age_group <- fct_recode(ll_hosphc_comm$age_group,
+                                         NULL = "Unknown/unspecified")
+
+# Rename the levels of the treatment facility variable
+ll_hosphc_comm$treatment_facility_name <- fct_recode(ll_hosphc_comm$treatment_facility_name,
+                                                `Bossangoa Hospital` = "bsn_h",
+                                                Ndjongobe = "ndjongobe",
+                                                Ngouwe = "ngouwe",
+                                                `Raoul follereau` = "raoul_follereau",
+                                                Boguila = "boguila")
+
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// vector_vars \\\
+--------------------------------------------------------------------------------
+
+This chunk creates groups of variables that you might want to use together. That
+way, if you want to run the same function over these variables, you can run it
+all at once. For example, you may want to look at frequency of all symptoms at
+the same time.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r vector_vars, message = FALSE, warning = FALSE, echo = FALSE}
+
+
+# create a grouping of all symptoms 
+SYMPTOMS <- c("candidiasis",
+              "severe_oral_lesions", 
+              "acute_otitis_media",
+              "seizure_episodes")
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Standardising values of variables \\\
+--------------------------------------------------------------------------------
+
+Use the matchmaker package to standardise variables before creating/exporting our cleaned linelist
+------------------------------------------------------------------------------- -->
+
+```{r standardise_values, message = FALSE, warning = FALSE, echo = FALSE}
+# Import the dictionary that specifies the values of specific variables
+dictionary <- rio::import(here::here("data", "dictionary_bossangoa.xlsx"))
+## ## This step fixes the values so that you can read them.
+## ## values like 1/0 will be recoded as "Yes" / "No" based on the dictionary
+ ll_hosphc_comm <- matchmaker::match_df(ll_hosphc_comm,
+  dict  = dictionary,
+  from  = "options",
+  to    = "values",
+  by    = "grp",
+  order = "orders"
+)
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Remove duplicates from all data\\\
+--------------------------------------------------------------------------------
+This chunk allows any cases that are present in the hospital and health centre/community data to be excluded
+First we create a new unique ID made up of family name, first name, sex and age
+Only keep those row with most recent information rather than both
+Of remaining duplicates seen on the same day, remove those that went to HC that were also at hospital
+Of remaining duplicates seen on the same day, just keep one of them but check first on dead/alive status before finally removing any
+
+------------------------------------------------------------------------------- -->
+
+```{r remove_duplicates, message = FALSE, warning = FALSE, echo = FALSE}
+# Create a unique ID based on age, sex, first name, family, name
+# See a total of 131 duplicates based on exact first name, surname, age, and sex
+duplicates <- ll_hosphc_comm %>% 
+  mutate(id_duplicate = paste(nom, prenom, age_years, sex, sep = "_")) %>% 
+  janitor::get_dupes(id_duplicate)
+
+
+## Keep the most recent entries of measles cases based on admission date
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate(id_duplicate = paste(nom, prenom, age_years, sex, sep = "_")) %>% 
+  group_by(id_duplicate) %>% 
+  filter(date_of_consultation_admission == max(date_of_consultation_admission)) %>% # only keep the IDs which have the most recent date of consultation
+  ungroup(id_duplicate)
+
+## There are still remaining duplicates who were entered on the same day
+## Identify those where health facility is missing or where health facility is a HC (as duplicates are either both in Hospital or hospital and HC)
+duplicates2 <- ll_hosphc_comm %>% 
+   janitor::get_dupes(id_duplicate) %>% 
+   filter(treatment_facility_name %in% c("Unknown/unspecified","Ngouwe", "Raoul follereau", "Ndjongobe"))
+
+# Check the exist 
+# table(duplicates2$exit_status)
+
+## Remove duplicates without health facility specified/HC and remove any remaining non-unique id_duplicates after checking for outcome status differences
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  filter(!id_epidemique_nouvelle %in% duplicates2$id_epidemique_nouvelle) %>% 
+  distinct(id_duplicate,.keep_all = TRUE)
+
+```
+
+
+<!-- ## Create variable combining severity of illness variable and nutrition status -->
+
+
+```{r create_severity_nutrition_variable}
+  
+## Adapt severity of illness variable to include SAM and MAM
+
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate(severity_nutrition = case_when(
+    nutrition_status_at_admission %in% c("MAM", "SAM") ~ "Complicated",   # Any measles case that is either MAM or SAM is deemed complicated?
+    TRUE ~ severity_of_illness
+  ))
+
+
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// report_setup \\\
+--------------------------------------------------------------------------------
+
+This chunk removes cases after your reporting week and defines the start and end
+of the reporting period.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r report_setup, message = FALSE, warning = FALSE, echo = FALSE}
+# return the last day of the reporting week
+obs_end   <- week2date(str_glue("{reporting_week}-7"))
+
+# # filter out cases after end of reporting week
+ll_hosphc_comm <- ll_hosphc_comm %>% 
+  mutate(epiweek = as.aweek(epiweek)) %>% 
+  filter(epiweek <= reporting_week)
+  
+    
+# define the first week of outbreak (date of first case)
+first_week <- as.aweek(min(as.character(ll_hosphc_comm$epiweek)))
+
+# outbreak start 
+# return the first day in the week of first case 
+obs_start <- as.Date(first_week)
+
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// save_cleaned_data \\\
+--------------------------------------------------------------------------------
+
+You can save your cleaned dataset as an Excel. 
+This automatically names your file "linelist_cleaned_DATE", where DATE is the
+current date.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r save_cleaned_data, message = FALSE, warning = FALSE, echo = FALSE}
+# Non-anonymised
+ rio::export(ll_hosphc_comm, here::here("data", "clean", str_glue("bossangoa_measles_hf_cleaned_{reporting_week}.xlsx")))
+# 
+# 
+# # Anonymised (remove names and id which included name)
+ll_hosphc_comm_anon <- ll_hosphc_comm %>% 
+   select(-prenom, -nom, -id_duplicate)
+# 
+ # export anonymised 
+rio::export(ll_hosphc_comm_anon, here::here("data", "clean", str_glue("bossangoa_measles_hf_cleaned_anon_{reporting_week}.xlsx")))
+
+
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+After adjusting and running the above code, you will have a clean dataset.
+This marks the start of the ANALYSIS portion of the template.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+### Person
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This section focuses on who is affected - total, by sex, by age.
+There is code to include:
+- A bar chart of case numbers of incidence by age group.
+- Cases by health facility per week
+- Attack rate (AR)
+- Number of deaths (in suspected and confirmed cases)
+- Mortality rates
+- Case fatality ratio (CFR)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+
+From the start of the outbreak up until `r reporting_week` there were a 
+total of `r nrow(ll_hosphc_comm)` cases. Of those cases, `r fmt_count(ll_hosphc_comm, source == "hospital")` were reported at Bossangoa Hospital, `r fmt_count(ll_hosphc_comm, source == "health_centre")` were reported from health centres and `r fmt_count(ll_hosphc_comm, source == "community")` were reported from the community. 
+
+
+There were `r fmt_count(ll_hosphc_comm, sex == "Female")` females and
+`r fmt_count(ll_hosphc_comm, sex == "Male")` males. 
+
+The most affected age group was `r tab_linelist(ll_hosphc_comm, age_group) %>% slice(which.max(n)) %>% pull(value)` years. 
+
+
+
+#### Demographics 
+
+
+There were `r fmt_count(ll_hosphc_comm, is.na(sex)| sex == "Unknown/unspecified")` cases missing information on sex and `r fmt_count(ll_hosphc_comm, is.na(age_group))` missing age group.
+
+
+Cases by age group and sex
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// describe_by_age_group_and_sex \\\
+--------------------------------------------------------------------------------
+
+This chunk will create a table of cases by age group and sex.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r describe_by_age_group_and_sex, message = FALSE, warning = FALSE, echo = FALSE}
+# Specify columns to be numeric in flextable
+j <- c("Male proportion", "Female proportion", "Missing proportion")
+
+# Create a table counting case by age group and sex
+tab_linelist(ll_hosphc_comm, 
+             age_group, strata = sex, na.rm = FALSE,
+             col_total = TRUE, row_total = TRUE) %>% 
+  select(-variable) %>%
+  rename("Age group" = value) %>%
+  flextable::flextable() %>% 
+  flextable::colformat_num(j = j, digits = 0)
+```
+
+
+
+Cases by population proportion (age group and sex)
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// total_props_agegroup_sex \\\
+--------------------------------------------------------------------------------
+
+You can also show cases by proportion of the total population by sex and age.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r total_props_agegroup_sex, message = FALSE, warning = FALSE, echo = FALSE}
+tab_linelist(ll_hosphc_comm, 
+             age_group, strata = sex, na.rm = FALSE,
+             col_total = TRUE, row_total = TRUE, prop_total = TRUE) %>% 
+  select(-variable) %>%
+  rename("Age group" = value) %>%
+  flextable::flextable() %>% 
+  flextable::colformat_num(j = j, digits = 0)
+```
+
+
+Age pyramid all cases (hospital, health centres and community)
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// age_pyramid\\\
+--------------------------------------------------------------------------------
+
+This chunk creates an age/sex pyramid of your cases.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r age_pyramid, message = FALSE, warning = FALSE, echo = FALSE}
+
+ plot_age_pyramid(ll_hosphc_comm, na.rm = TRUE,
+                  age_group = "age_group", 
+                  split_by = "sex") + 
+  labs(y = "Cases (n)", x = "Age group") + # change axis  labels
+  theme(legend.position = "bottom",        # move legend to bottom
+        legend.title = element_blank(),    # remove title
+        text = element_text(size = 18),
+        axis.text.x = element_text(angle = 45, hjust = 0.7)# change text size
+       )
+```
+
+
+Cases by vaccination status
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// describe_by_vaccination_status \\\
+--------------------------------------------------------------------------------
+
+This chunk creates a table of the vaccination status of your cases.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r describe_by_vaccination_status, message = FALSE, warning = FALSE, echo = FALSE}
+tab_linelist(ll_hosphc_comm,
+            previously_vaccinated, 
+            col_total = TRUE) %>% 
+  select(-variable) %>%
+  rename("Vaccination status" = value, 
+         "Cases (n)" = n, 
+         "%" = proportion) %>% 
+  flextable::flextable()
+```
+
+
+
+Cases by illness severity at visit/admission - adapted so that MAM and SAM cases are considered complications
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// describe_by_illness_severity_admission \\\
+--------------------------------------------------------------------------------
+
+This chunk creates a table of the secerity of illness of your cases at
+admission.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r describe_by_illness_severity_admission, message = FALSE, warning = FALSE, echo = FALSE}
+tab_linelist(ll_hosphc_comm, severity_nutrition,
+             col_total = TRUE) %>%
+  select(-variable) %>%
+  rename("Illness severity including MAM/SAM" = value, 
+         "Cases (n)" = n, 
+         "%" = proportion) %>% 
+  flextable::flextable()
+```
+
+
+
+
+Cases by source
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// describe_by_source \\\
+--------------------------------------------------------------------------------
+
+This chunk gives the counts and proportions cases by health facility
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r describe_by_facility, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Create database for previous 2 epiweeks
+ll_hosphc_comm_last2 <- ll_hosphc_comm %>% 
+  filter(epiweek == reporting_week| epiweek == last_reporting_week)
+
+# Summary table of cases by facility per last2 weeks
+cases_past_2_weeks <- tab_linelist(ll_hosphc_comm_last2, source,
+             strata = epiweek, col_total = TRUE) %>% 
+  select(-variable) %>%
+  # # fix the way symptom names are displayed
+  # # str_replace_all switches underscore for space in the variable column
+  # # str_to_sentence makes the first letter capital, and all others lowercase
+  # mutate(variable = str_to_sentence(str_replace_all(variable, "_", " "))) %>%
+  rename("Health facility" = value) %>% 
+  rename_redundant("%" = proportion) %>%
+  augment_redundant(" cases (n)" = " n$") 
+
+# Summary table of number of deaths by facility per last 2 weeks 
+dead_past_2_weeks <- ll_hosphc_comm_last2 %>% 
+  filter(is.na(source) == F) %>% 
+  group_by(source, epiweek) %>% 
+  summarise(no_deaths = sum(DIED == TRUE, na.rm = TRUE)) %>% 
+  mutate(epiweek = paste0(epiweek, " deaths (n)")) %>% 
+  tidyr::pivot_wider(names_from = epiweek, values_from = no_deaths) %>% 
+  rename("Cases reported by" = source) %>% 
+  janitor::adorn_totals("row") %>% 
+  select(2,3) # removing the health facility variable as otherwise would appear twice
+
+# Combine the two tables together
+bind_cols(cases_past_2_weeks, dead_past_2_weeks) %>% 
+  flextable::flextable()
+
+```
+
+
+#### Case fatality ratio 
+
+The case fatality ratio among all cases with known outcomes
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// overall_cfr \\\
+--------------------------------------------------------------------------------
+
+This chunk gives the case fatality ratio among inpatients with outcomes.
+If you have no deaths reported, the table will not be useful.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r overall_cfr, message = FALSE, warning = FALSE, echo = FALSE}
+# use arguments from above to produce overal CFR
+ll_hosphc_comm %>% 
+  case_fatality_rate_df(deaths = DIED, mergeCI = TRUE) %>%
+  rename("Deaths" = deaths,
+         "Cases" = population,
+         "CFR (%)" = cfr,
+         "95%CI" = ci) %>%
+  flextable::flextable() 
+
+```
+
+
+The case fatality ratio by sex among all cases with known outcomes is below. 
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// cfr_by_sex \\\
+--------------------------------------------------------------------------------
+
+This chunk gives the case fatality ratio among all cases with outcomes, divided
+by sex. If you have no deaths reported, the table will not be useful.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r cfr_by_sex, message = FALSE, warning = FALSE, echo = FALSE}
+ll_hosphc_comm %>%
+  mutate(sex = forcats::fct_explicit_na(sex, "-")) %>%
+  case_fatality_rate_df(deaths = DIED, group = sex, mergeCI = TRUE, add_total = TRUE) %>%
+  rename("Sex" = sex, 
+         "Deaths" = deaths, 
+         "Cases" = population, 
+         "CFR (%)" = cfr, 
+         "95%CI" = ci) %>% 
+ flextable::flextable()
+```
+
+
+
+CFR by age group among all cases with known outcomes
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// cfr_by_age_group \\\
+--------------------------------------------------------------------------------
+
+This chunk gives the case fatality ratio among all cases with outcomes, divided
+by age group. If you have no deaths reported, the table will not be useful.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r cfr_by_age_group, message = FALSE, warning = FALSE, echo = FALSE}
+
+ll_hosphc_comm %>%
+  case_fatality_rate_df(deaths = DIED,
+                        group = age_group,
+                        mergeCI = TRUE, 
+                        add_total = TRUE) %>%
+  tidyr::complete(age_group, 
+                  fill = list(deaths = 0, 
+                              population = 0, 
+                              cfr = 0, 
+                              ci = 0)) %>% # Ensure all levels are represented
+  rename("Age group" = age_group, 
+         "Deaths" = deaths, 
+         "Cases" = population, 
+         "CFR (%)" = cfr, 
+         "95%CI" = ci) %>% 
+ flextable::flextable()
+```
+
+
+
+#### Attack rate
+
+The attack rate per 10,000 population is below (based on available population data available for the catchment area/region of interest). 
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// collect_variables \\\
+--------------------------------------------------------------------------------
+
+This defines your population by summing up the population by sous prefecture.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r collect_variables, message = FALSE, warning = FALSE, echo = FALSE}
+# define population 
+# identify which commune have been affected
+affected_commune <- ll_hosphc_comm %>% 
+  mutate(level = if_else(patient_origin == "nana_bakassa_sp",  # ensure that nana bakassa sp also recognised as a commune
+                         "commu", level)) %>%
+  filter(level == "commu") %>% 
+  select(geo) %>% 
+  distinct() 
+
+## Identify which sous prefecture have been affected - based on SP data
+affected_sous_pref <- ll_hosphc_comm %>%
+  filter(level == "sp") %>%
+  select(geo) %>%
+  distinct()
+
+## identify sous prefecture based on commune information
+affected_sp_commune <- population_commune %>% 
+  filter(geo %in% affected_commune$geo) %>% 
+  select(nom_sous_prefecture) %>% 
+  rename(geo = "nom_sous_prefecture")
+
+## Combine the sous prefecture data based on commune and also based on SP data directly
+all_affected_sp <- bind_rows(affected_sous_pref,affected_sp_commune) %>% 
+  distinct(geo)
+
+## Count the sous_prefecture population 
+population <- population_sous_pref %>% 
+  filter(geo %in% all_affected_sp$geo) %>% 
+  summarise(total = sum(count),
+            `<6 months` = sum(`<6 months`, na.rm = TRUE),
+            `6-11 months` = sum(`6-11 months`, na.rm = TRUE),
+            `12-59 months` = sum(`12-59 months`, na.rm = TRUE),
+            `5-9 years` = sum(`5-9 years`, na.rm = TRUE),
+            `10-14 years` = sum(`10-14 years`, na.rm = TRUE),
+            `15 + years` = sum(`15 + years`, na.rm = TRUE))
+  
+## Count age groups of affected sous prefecture
+population_data_age_sp <- population %>% 
+  select(-total) %>% 
+  tidyr::pivot_longer(cols = `<6 months`:`15 + years`,  # go from wide to long, put age group into one variable and values into the population variable
+               names_to  = "age_group",
+               values_to = "population"
+               )
+
+
+## Count the affected commune population 
+population_commune_count <- population_commune %>% 
+  filter(geo %in% affected_commune$geo) %>% 
+  summarise(total = sum(count),
+            `<6 months` = sum(`<6 months`, na.rm = TRUE),
+            `6-11 months` = sum(`6-11 months`, na.rm = TRUE),
+            `12-59 months` = sum(`12-59 months`, na.rm = TRUE),
+            `5-9 years` = sum(`5-9 years`, na.rm = TRUE),
+            `10-14 years` = sum(`10-14 years`, na.rm = TRUE),
+            `15 + years` = sum(`15 + years`, na.rm = TRUE))
+  
+
+  
+## Count age groups of affected commune
+population_data_age_commune <- population_commune_count %>%          # only keep the affected commune
+  tidyr::pivot_longer(cols = `<6 months`:`15 + years`,  # go from wide to long, put age group into one variable and values into the population variable
+                      names_to  = "age_group",
+                      values_to = "population"
+  )
+
+```
+
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+///attack_rate by sous prefecture \\\
+--------------------------------------------------------------------------------
+
+This chunk calculates the attack rate for all affected sous-prefecture and then shows you the confidence
+intervals.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r attack_rate, message = FALSE, warning = FALSE, echo = FALSE}
+ar <- attack_rate(nrow(ll_hosphc_comm), population$total, multiplier = 10000)
+
+ar %>%
+  merge_ci_df(e = 3) %>% # merge the lower and upper CI into one column
+  rename("Cases (n)" = cases, 
+         "Population of Sous-Prefecture affected" = population, 
+         "AR (per 10,000)" = ar, 
+         "95%CI" = ci) %>% 
+  # select(-Population) %>% # drop the population column as it is not changing
+  knitr::kable(digits = 1, align = "r")
+```
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// attack_rate_by_agegroup_by_sous_prefecture- table \\\
+--------------------------------------------------------------------------------
+
+This chunk calculates the attack rate by age group and then gives a table of
+attack rate by group.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r attack_rate_by_agegroup, message = FALSE, warning = FALSE, echo = FALSE}
+
+cases <- count(ll_hosphc_comm, age_group) %>%    # cases for each age_group
+   left_join(population_data_age_sp, by = "age_group") # merge population data 
+ 
+
+# # attack rate for each group
+attack_rate(cases$n, cases$population, multiplier = 10000, mergeCI = TRUE) %>%
+  # add the age group column to table
+  bind_cols(select(cases, age_group), .) %>%
+  rename("Age group" = age_group,
+         "Cases (n)" = cases,
+         "Population" = population,
+         "AR (per 10,000)" = ar,
+         "95%CI" = ci) %>%
+  flextable::flextable()
+```
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// attack_rate_by_agegroup_by_sous_prefecture- plot\\\
+--------------------------------------------------------------------------------
+
+You can then plot the above table on a bar plot. AR is on the y-axis, and it
+will show age groups by AR.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+```{r bar_attack_rate_by_agegroup, message = FALSE, warning = FALSE, echo = FALSE}
+## Save attack rate by age_group as an object for the plot
+ar_age_group <- attack_rate(cases$n, cases$population, multiplier = 10000) %>% 
+  # add the age group column to table
+  bind_cols(select(cases, age_group), .)
+
+## Create plot of attack rate by age group
+ggplot(ar_age_group, aes(x = factor(age_group,
+                                    levels =c("<6 months", "6-11 months", 
+                                              "12-59 months", "5-9 years", 
+                                              "10-14 years", "15 + years")),
+               y = ar)) +
+  # plot as bars (identity = as is)
+  geom_bar(stat = "identity", col = "black", fill = "brown2") + 
+  # add CIs
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+  # set origin for axes
+  scale_y_continuous(expand = c(0,0)) +  
+  # add labels to axes and below chart
+  labs(x = "Age group", y = "AR (per 10,000 for \naffected sub prefectures)", 
+       captions = str_glue("Source: MSF data from {reporting_week}")) + 
+  epicurve_theme
+
+```
+
+
+#### Mortality attributable to measles
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This section can only be used if you are in a closed population (eg refugee
+camp). The assumptions don't hold in an open/community setting.
+
+This chunk calculates the attack rate by age group and then gives a table of
+attack rate by group.
+
+This section gives mortality rates attributable to measles in a closed
+population. It does not calculate all-cause mortality. It assumes that all
+measles deaths are among inpatients.
+
+This demonstrates three ways of calculating mortality rate based on catchment
+population (twice) and based on hospital population.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// collect_variables_rates \\\
+--------------------------------------------------------------------------------
+
+This chunk calculates key variables to do mortality rate.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r collect_variables_rates, message = FALSE, warning = FALSE, echo = FALSE}
+
+# count number of deaths 
+deaths <- sum(ll_hosphc_comm$DIED, na.rm = TRUE)
+
+# outbreak duration in days 
+obs_time <- as.numeric(obs_end - obs_start)
+
+# patient observation time 
+pat_obs_time <- ll_hosphc_comm %>% 
+  filter(!is.na(statut_finale_si_hospitalise)) %>% 
+  summarise(days = sum(obs_days, na.rm = TRUE)) %>%
+  pull(days)
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// mortality_rate \\\
+--------------------------------------------------------------------------------
+
+To produce a mortality rate (attribuatble to measles) per 10,000 people use
+the following code chunk. This assumes that you are capturing every measles
+death in your population.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Mortality rate attributable to measles per 10,000 population
+
+```{r mortality_rate, message = FALSE, warning = FALSE, echo = FALSE}
+
+mortality_rate(deaths, population$total, multiplier = 10000, mergeCI = TRUE) %>%
+  rename("Deaths" = deaths, 
+         "Population of affected Sous-prefectures" = population, 
+         "Mortality (per 10,000)" = `mortality per 10 000`, 
+         "95%CI" = ci) %>% 
+  flextable::flextable()
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// mortality_rate_CMR \\\
+--------------------------------------------------------------------------------
+
+To produce a crude mortality rate attributable to measles per 10,000 people per 
+day, use the folowing code chunk. 
+
+This assumes that you are capturing every measles death in your population and 
+that your population remains stable over the time period of interest. 
+
+In this situation the time period of interest is from the beginning of the 
+epiweek your first case occured in, until the last day of the epiweek you are 
+currently reporting on. (see this presentation (https://www.odi.org/sites/odi.org.uk/files/odi-assets/events-presentations/776.pdf) for more detail)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Crude mortality rate attributable to measles per 10,000 population per day
+
+```{r mortality_rate_CMR, message = FALSE, warning = FALSE, echo = FALSE}
+
+mortality_rate(deaths, population$total*obs_time, multiplier = 10000, mergeCI = TRUE) %>%
+  rename("Deaths" = deaths, 
+         "Person-days" = population, 
+         "Mortality (per 10,000/day)" = `mortality per 10 000`, 
+         "95%CI" = ci) %>% 
+  flextable::flextable()
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// mortality_rate_patients \\\
+--------------------------------------------------------------------------------
+
+Alternatively, if you are unsure whether your hospital deaths are
+representative of the wider population, use the following code chunk. 
+This uses the person days of cases in your linelist with a known outcome. 
+However, this will give you an unreasonably high mortality rate, as 
+those in hospital will only be the most severely affected. ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Mortality rate attributable to measles per 10,000 patients per day
+
+```{r mortality_rate_patients, message = FALSE, warning = FALSE, echo = FALSE}
+mortality_rate(deaths, pat_obs_time, multiplier = 10000, mergeCI = TRUE) %>%
+  rename("Deaths" = deaths, 
+         "Population" = population, 
+         "Mortality (per 10,000/day)" = `mortality per 10 000`, 
+         "95%CI" = ci) %>% 
+  flextable::flextable()
+```
+
+
+
+
+
+
+### Time
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This section focuses on the when of the outbreak:
+- When did cases fall ill?
+- Are numbers increasing or decreasing?
+
+There is code to include an epi curve.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+Epicurves for all cases
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// epicurve \\\
+--------------------------------------------------------------------------------
+
+# This chunk will calculate weekly incidence and plot your epicurve.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r epicurve, message = FALSE, warning = FALSE, echo = FALSE}
+
+# count cases for each week of outbreak
+# you can change the start of your week (eg "Sunday week", "Saturday week")
+inc_week_7 <- incidence(ll_hosphc_comm$date_of_consultation_admission,
+                        interval = "Monday week",
+                        groups = ll_hosphc_comm$source)
+
+
+# plot your epicurve
+basic_curve <- plot(inc_week_7, 
+                    show_cases = FALSE,
+                    border = "black", 
+                    n_breaks = nrow(inc_week_7)/2) + 
+  scale_y_continuous(expand = c(0, 0)) +  # set origin for axes
+  # add labels to axes and below chart
+  epicurve_labels +
+  # change visuals of dates and remove legend title
+  epicurve_theme
+
+# show your plot (stored for later use) 
+basic_curve
+
+## if the outbreak has been going on for a while, your x-axis might look messy.
+## to reduce the number of labels, uncomment the below.
+## you can customize the number of breaks by changing n_breaks
+## you can also use months for your break (here in three-month intervals)
+
+# basic_curve + scale_x_incidence(inc_week_7, n_breaks = 6)
+# basic_curve + scale_x_date(breaks = "3 months", date_labels = "%b %Y")
+
+
+```
+
+The peak of the outbreak was in `r date2week(find_peak(inc_week_7), floor_day = TRUE)`
+
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// attack_rate_per_week_by_sous_prefecture \\\
+--------------------------------------------------------------------------------
+
+This chunk creates a table of attack rate by week
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Attack rate per 10,000 population by week 
+
+```{r attack_rate_per_week, message = FALSE, warning = FALSE, echo = FALSE}
+# counts and cumulative counts by week
+cases <- ll_hosphc_comm %>%
+  arrange(date_of_onset) %>%        # arrange by date of onset
+  count(epiweek, .drop = FALSE) %>% # count all epiweeks and include zero counts
+  mutate(cumulative = cumsum(n))    # add a cumulative sum
+
+
+# attack rate for each week
+ar <- attack_rate(cases$n, population$total, multiplier = 10000) %>% 
+  bind_cols(select(cases, epiweek), .) # add the epiweek column to table
+
+
+ar %>%
+  merge_ci_df(e = 4) %>% # merge the lower and upper CI into one column
+  rename("Epiweek" = epiweek, 
+         "Cases (n)" = cases, 
+         "Population of sous-prefecture affected" = population, 
+         "AR (per 10,000)" = ar, 
+         "95%CI" = ci) %>% 
+  flextable::flextable()
+```
+ 
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// cumulative_attack_rate_per_week_by_sous_prefecture \\\
+--------------------------------------------------------------------------------
+
+This chunk calculates the cumulative attack rate per week.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Cumulative attack rate per 10,000 population per week
+
+```{r cumulative_attack_rate_per_week, message = FALSE, warning = FALSE, echo = FALSE}
+
+attack_rate(cases$cumulative, population$total, multiplier = 10000) %>% 
+  bind_cols(select(cases, epiweek), .) %>% # add the epiweek column to table
+  merge_ci_df(e = 4) %>% # merge the lower and upper CI into one column
+  rename("Epiweek" = epiweek, 
+         "Cases (n)" = cases, 
+         "Population" = population, 
+         "AR (per 10,000 sub prefecture population)" = ar, 
+         "95%CI" = ci) %>% 
+  flextable::flextable()
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// CFR_per_week \\\
+--------------------------------------------------------------------------------
+
+This chunk calculates the CFR among cases in Bossangoa Hospital as a proportion per week.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Case fatality ratio as a proportion among all cases in Bossangoa hospital by week
+
+```{r cfr_per_week, message = FALSE, warning = FALSE, echo = FALSE}
+
+# calculate CFR among inpatients by week
+cfr <- ll_hosphc_comm %>%
+  filter(source == "hospital") %>%
+  case_fatality_rate_df(str_detect(DIED, "TRUE"), group = epiweek) 
+
+cfr %>%
+  merge_ci_df(e = 4) %>% # merge the lower and upper CI into one column
+  rename("Epiweek" = epiweek, 
+         "Deaths" = deaths, 
+         "Cases" = population, 
+         "CFR (%)" = cfr, 
+         "95%CI" = ci) %>% 
+  knitr::kable(digits = 1, align = "r")
+```
+
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+You could plot the AR (in the population) and CFR (among inpatients only)
+together with the epicurve by epiweek.
+
+We will do this in three steps: 
+- creating the AR graph (ar_line_graph)
+- creating the CFR graph (cfr_line_graph)
+- combining and plotting (epicurve_ar_cfr)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ar_line_graph \\\
+--------------------------------------------------------------------------------
+
+This chunk sets up the AR graph. (It does not print the graph automatically.)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r ar_line_graph, message = FALSE, warning = FALSE, echo = FALSE}
+
+ar_plot <- ggplot(ar, aes(x = week2date(epiweek) + (7 * 0.5), group = 1)) +
+  # add confidence intervals as a ribbon
+  geom_ribbon(aes(ymin = lower, ymax = upper), 
+              color = "blue",  fill = "blue", 
+              linetype = 2, alpha = 0.2, show.legend = FALSE) +
+  # add AR as a line
+  geom_line(aes(y = ar), color = "blue", show.legend = FALSE) +
+  # set origin for axes
+  scale_y_continuous(expand = c(0, 0)) +
+  # scale the x axis the same as the incidence curve. Expand forces it to align. 
+  incidence::scale_x_incidence(inc_week_7, 
+                               n_breaks = nrow(inc_week_7), 
+                               expand = c(0, 7 * 1.5)) +
+  # add labels to axes and below chart
+  labs(x = "Calendar week", y = "AR [95% CI]", subtitle = "Attack Rate (per 10,000 sub prefecture population)") + 
+  # change visuals of dates and remove legend title
+  epicurve_theme
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// cfr_line_graph \\\
+--------------------------------------------------------------------------------
+
+This chunk sets up the CFR graph. (It does not print the graph automatically.)
+If you do not have any deaths in your data set, this will not show anything.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r cfr_line_graph, message = FALSE, warning = FALSE, echo = FALSE}
+
+cfr_plot <- ggplot(cfr, aes(x = week2date(epiweek) + (7 * 0.5), group = 1)) +
+  # add confidence intervals as a ribbon
+  # geom_ribbon(aes(ymin = lower, ymax = upper), 
+  #             color = "red", fill = "red", 
+  #             linetype = 2, alpha = 0.2, show.legend = FALSE) +
+  # add CFR as a line
+  geom_line(aes(y = cfr), color = "red", show.legend = FALSE) +
+  # set origin for axes
+  scale_y_continuous(expand = c(0, 0)) +  
+  # scale the x axis the same as the incidence curve. Expand forces it to align. 
+  incidence::scale_x_incidence(inc_week_7, 
+                               n_breaks = nrow(inc_week_7)/2, 
+                               expand = c(0, 7 * 1.5)) +
+  # add labels to axes and below chart
+  labs(x = "Calendar week", y = "CFR [95% CI]", 
+       subtitle = "Case Fatality Ratio [95% CI] in Bossangoa Hospital") + 
+  # change visuals of dates and remove legend title
+  epicurve_theme 
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// epicurve_ar_cfr \\\
+--------------------------------------------------------------------------------
+
+This chunk prints the AR and CFR with the epicurve.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r epicurve_ar_cfr, warning = FALSE, message = FALSE, echo = FALSE, fig.height = 10}
+
+nofx <- theme(axis.text.x = element_blank(),
+              axis.title.x = element_blank())
+
+cowplot::plot_grid(
+  basic_curve + nofx,
+  ar_plot + nofx,
+  cfr_plot,
+  align = "v", # align plots vertically
+  axis = "lr", # only by their left and right margins
+  ncol = 1     # allow only one column
+)
+```
+
+
+### Place 
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This section focuses on the where of the outbreak: what area is affected, how
+many villages, and so on.
+
+There is code to include maps based on distribution of cases. You must have a
+shapefile to create this map.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+
+#### Descriptive
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// attack_rate_by_sous_prefecture \\\
+--------------------------------------------------------------------------------
+
+If you do not have a shapefile, you may want to calculate attack rates by
+sous-prefecture
+
+Consider facet wrapping by a larger unit if you have many regions (eg if you
+have patients from 10+ villages, you may want to show your tables by health
+zone)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Attack rate per 10,000 population by sous-prefecture 
+
+```{r attack_rate_by_sp, message = FALSE, warning = FALSE, echo = FALSE}
+
+# count cases by Sous prefecture
+cases <- count(ll_hosphc_comm, sous_prefecture) %>%
+  # add in population data
+  left_join(population_sous_pref, by = c( "sous_prefecture" = "geo"))
+
+
+# calculate attack rate for sous-prefecture
+ar_sp <- attack_rate(cases$n, cases$count, multiplier = 10000) %>% 
+  # add the sous-prefecture column to table
+  bind_cols(select(cases, sous_prefecture), .) %>% 
+  rename("Sous prefecture" = sous_prefecture, 
+         "Cases (n)" = cases, 
+         "Population" = population, 
+         "AR (per 10,000)" = ar, 
+         "Lower 95%CI" = lower,
+         "Upper 95%CI" = upper) 
+
+ar_sp %>% 
+  merge_ci_df(e = 4) %>% # merge lower and upper CI in to one column 
+  rename("95%CI" = ci) %>%   # rename single 95%CI column
+  flextable::flextable()
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// bar_attack_rate_by_sous_prefecture \\\
+--------------------------------------------------------------------------------
+
+You can then plot the above table on a bar plot. AR is on the y-axis, and it
+will show regions in descending order by AR.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r bar_attack_rate_by_sp, message = FALSE, warning = FALSE, echo = FALSE}
+
+ggplot(ar_sp, aes(x = reorder(`Sous prefecture`, `AR (per 10,000)`),
+               y = `AR (per 10,000)`)) +
+  # plot as bars (identity = as is)
+  geom_bar(stat = "identity", col = "black", fill = "red") + 
+  # add CIs
+  geom_errorbar(aes(ymin = `Lower 95%CI`, ymax = `Upper 95%CI`), width = 0.2) +
+  # set origin for axes
+  scale_y_continuous(expand = c(0,0)) +  
+  # add labels to axes and below chart
+  labs(x = "Sous-prefecture", y = "AR (per 10,000)", 
+       captions = str_glue("Source: MSF data from {reporting_week}")) + 
+  epicurve_theme
+
+```
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// attack_rate_by_commune whole period\\\
+--------------------------------------------------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Attack rate per 10,000 population by commune for the whole period
+
+```{r attack_rate_by_commune, message = FALSE, warning = FALSE, echo = FALSE}
+
+# count cases by commune
+cases <- count(ll_hosphc_comm, commune) %>%
+  # add in population data
+  left_join(population_commune, by = c( "commune" = "geo"))
+
+
+# calculate attack rate for region
+ar_commune <- attack_rate(cases$n, cases$count, multiplier = 10000) %>% 
+  # add the region column to table
+  bind_cols(select(cases, commune), .) %>% 
+  rename("Commune" = commune, 
+         "Cases (n)" = cases, 
+         "Population" = population, 
+         "AR (per 10,000)" = ar, 
+         "Lower 95%CI" = lower,
+         "Upper 95%CI" = upper) 
+
+ar_commune %>% 
+  merge_ci_df(e = 4) %>% # merge lower and upper CI in to one column 
+  rename("95%CI" = ci) %>%  # rename single 95%CI column
+  flextable::flextable()
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// bar_attack_rate_by_commune whole period \\\
+--------------------------------------------------------------------------------
+
+You can then plot the above table on a bar plot. AR is on the y-axis, and it
+will show regions in descending order by AR.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Plot of attack rate for the whole period
+
+```{r bar_attack_rate_by_commune, message = FALSE, warning = FALSE, echo = FALSE}
+
+ggplot(ar_commune, aes(x = reorder(Commune, `AR (per 10,000)`),
+               y = `AR (per 10,000)`)) +
+  # plot as bars (identity = as is)
+  geom_bar(stat = "identity", col = "black", fill = "red") + 
+  # add CIs
+  geom_errorbar(aes(ymin = `Lower 95%CI`, ymax = `Upper 95%CI`), width = 0.2) +
+  # set origin for axes
+  scale_y_continuous(expand = c(0,0)) +  
+  # add labels to axes and below chart
+  labs(x = "Commune", y = "AR (per 10,000)", 
+       captions = str_glue("Source: MSF data from {reporting_week}")) + 
+  epicurve_theme
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// attack_rate_by_commune past 4 weeks\\\
+--------------------------------------------------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Attack rate per 10,000 population by commune for the past 4 weeks
+
+```{r attack_rate_by_commune_past4, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Create database for past 4 weeks
+ll_hosphc_comm_past4 <- ll_hosphc_comm %>% 
+  filter(epiweek >= four_weeks_earlier, epiweek <= reporting_week)
+
+# count cases by commune over past 4 weeks
+cases_past4 <- count(ll_hosphc_comm_past4, commune) %>%
+  # add in population data
+  left_join(population_commune, by = c( "commune" = "geo"))
+
+
+# calculate attack rate for region
+ar_commune_past4 <- attack_rate(cases_past4$n, cases_past4$count, multiplier = 10000) %>% 
+  # add the region column to table
+  bind_cols(select(cases_past4, commune), .) %>% 
+  rename("Commune" = commune, 
+         "Cases (n)" = cases, 
+         "Population" = population, 
+         "AR (per 10,000)" = ar, 
+         "Lower 95%CI" = lower,
+         "Upper 95%CI" = upper) 
+
+ar_commune_past4 %>% 
+  merge_ci_df(e = 4) %>% # merge lower and upper CI in to one column 
+  rename("95%CI" = ci) %>%  # rename single 95%CI column
+  flextable::flextable()
+```
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// bar_attack_rate_by_commune past 4 weeks \\\
+--------------------------------------------------------------------------------
+
+You can then plot the above table on a bar plot. AR is on the y-axis, and it
+will show regions in descending order by AR.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+Plot attack rate by commune past 4 weeks
+
+```{r bar_attack_rate_by_commune_past4, message = FALSE, warning = FALSE, echo = FALSE}
+
+ggplot(ar_commune_past4, aes(x = reorder(Commune, `AR (per 10,000)`),
+               y = `AR (per 10,000)`)) +
+  # plot as bars (identity = as is)
+  geom_bar(stat = "identity", col = "black", fill = "red") + 
+  # add CIs
+  geom_errorbar(aes(ymin = `Lower 95%CI`, ymax = `Upper 95%CI`), width = 0.2) +
+  # set origin for axes
+  scale_y_continuous(expand = c(0,0)) +  
+  # add labels to axes and below chart
+  labs(x = "Commune", y = "AR (per 10,000)", 
+       captions = str_glue("Source: MSF data from {four_weeks_earlier} to {reporting_week}")) + 
+  epicurve_theme
+```
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// mortality_rate_sous_prefecture \\\
+--------------------------------------------------------------------------------
+
+You could also calculate mortality rate by region (check the mortality code
+chunk in Person section for assumptions).
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+Mortality rate per 10,000 population by region 
+
+```{r mortality_rate_region, message = FALSE, warning = FALSE, echo = FALSE}
+
+deaths <- group_by(ll_hosphc_comm, sous_prefecture) %>%
+  filter(str_detect(exit_status, "Dead")) %>% 
+  summarise(deaths = n()) %>% # count deaths by region
+  left_join(population_sous_pref, by = c("sous_prefecture" = "geo"))
+
+mortality_rate(deaths$deaths, deaths$count, multiplier = 10000) %>%
+  # add the region column to table
+  bind_cols(select(deaths, sous_prefecture), .) %>% 
+  merge_ci_df(e = 4) %>% # merge the lower and upper CI into one column
+  rename("Sous prefecture" = sous_prefecture, 
+         "Deaths" = deaths, 
+         "Population" = population, 
+         "Mortality (per 10,000)" = `mortality per 10 000`, 
+         "95%CI" = ci) %>% 
+  flextable::flextable()
+```
+
+
+
+
+#### Maps 
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// read_shapefiles \\\
+--------------------------------------------------------------------------------
+
+To create maps, you need to have a shapefile of the area. Often, the MSF GIS
+unit can provide shapefiles.
+
+Your shapefile can be a polygon or points. Polygons do not need to be contiguous.
+
+The names of the polygons or points MUST match the names in your linelist.
+
+Your coordinate reference system needs to be WGS84.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r read_shapefiles, message = FALSE, warning = FALSE, echo = FALSE}
+
+## read in shapefile by sous_prefecture
+map_sp <- read_sf(here::here("data", "shp", "caf_polbnd_adm2_a_msf.shp")) %>% 
+  clean_data()
+
+## check the coordinate reference system (CRS)
+# st_crs(map_sp)
+
+
+## read in shapefile for commune
+map_commune <- read_sf(here::here("data", "shp", "caf_polbnd_adm3_a_msf.shp")) %>% 
+  clean_data()
+
+
+## check the coordinate reference system (CRS)
+# st_crs(map_commune)
+
+## if CRS not WGS84, reset it
+# map <- st_set_crs(map, value = 4326) # Sets to WGS84
+
+```
+
+
+
+
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// choropleth_maps_by sous prefecture \\\
+--------------------------------------------------------------------------------
+
+Once you have loaded your shapefile, you can map the case counts or attack rates.
+
+You will want to make your counts or AR categorical. R will not do this
+automatically (unlike QGIS or ArcGIS).
+
+This chunk will walk you through several steps:
+- Create table with categories of counts or ARs by region.
+- Join your table with your shapefile.
+- Choose which variable you will use.
+
+Make sure you delete or comment out the section you are not using.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+```{r choropleth_maps_sp, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Create a categories of ARs by sous prefecture ----------------------------------------
+
+# define maximum
+max_ar    <- max(ar_sp$`Upper 95%CI`, na.rm = TRUE) # define your highest AR
+
+# create groups - one group will be 0 only, then up to 4 more groups evenly
+# divided to maximum
+breakers <- as.integer(c(
+                         # include zero as a standalone group
+                         0, 10,50,100,150,200))
+
+## create a categorical variable using the age_categories function 
+## (we aren't using ages - but it functions the same way!)
+ar_map <- mutate(ar_sp, 
+             categories = age_categories(`AR (per 10,000)`, 
+                                         breakers = breakers))
+
+
+
+## Join table to shapefile -----------------------------------------------------
+mapsub <- left_join(map_sp, ar_map, by = c("name_en" = "Sous prefecture"))
+
+
+## Reduce the number of Sous prefecture included in the map
+
+mapsub_reduced <- mapsub %>% 
+  filter(name_en %in% c("batangafo", "boguila", "bossangoa", "markounda", "nana_bakassa"))
+
+## Plot cases or AR by geography -----------------------------------------------
+
+## you could also fill by cases using `Cases (n)` in the fill option instead of `AR (per 10,000)`
+ggplot() +
+  # shapefile as polygon
+  geom_sf(data = mapsub_reduced, aes(fill = categories), col = "grey50") + 
+  # needed to avoid gridlines being drawn
+  coord_sf(datum = NA) + 
+  # add a scalebar
+  annotation_scale() + 
+  # color the scale to be perceptually uniform 
+  # drop FALSE keeps all levels 
+  # name allows you to change the legend title 
+  scale_fill_brewer(drop = FALSE, palette = "Reds", name = "AR (per 10,000)") + 
+  # label polygons
+  geom_sf_text(data = mapsub_reduced, aes(label = name_en), colour = "black", size = 4) + 
+  # remove coordinates and axes
+  theme_void() 
+
+```
+
+<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// choropleth_maps_by commune \\\
+--------------------------------------------------------------------------------
+
+Once you have loaded your shapefile, you can map the case counts or attack rates.
+
+You will want to make your counts or AR categorical. R will not do this
+automatically (unlike QGIS or ArcGIS).
+
+This chunk will walk you through several steps:
+- Create table with categories of counts or ARs by region.
+- Join your table with your shapefile.
+- Choose which variable you will use.
+
+Make sure you delete or comment out the section you are not using.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+Attack rate by commune for the entire period
+
+```{r choropleth_maps_commune, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Create a categories of ARs by sous prefecture ----------------------------------------
+
+# define maximum
+max_ar    <- max(ar_commune$`Upper 95%CI`, na.rm = TRUE) # define your highest AR
+
+# create groups - one group will be 0 only, then up to 4 more groups evenly
+# divided to maximum
+breakers <- as.integer(c(0, 10,50,100,300,400,500))
+                         # include zero as a standalone group
+             #             0, 
+             #             # 1 to 4 divisions, snapping the boundaries to the nearest 50
+             #             find_breaks(n = max_ar, breaks = 10, snap = 25, ceiling = TRUE)
+             # ))
+
+## create a categorical variable using the age_categories function 
+## (we aren't using ages - but it functions the same way!)
+ar_map_commune <- mutate(ar_commune, 
+             categories = age_categories(`AR (per 10,000)`, 
+                                         breakers = breakers))
+
+
+
+## Join table to shapefile -----------------------------------------------------
+mapsub <- left_join(map_commune, ar_map_commune, by = c("name_en" = "Commune"))
+
+
+## Reduce the number of SP on the map
+
+mapsub_reduced <- mapsub %>% 
+  filter(admin2_en %in% c("markounda", "batangafo", "nana_bakassa", "bossangoa"))
+
+
+
+## Plot cases or AR by geography -----------------------------------------------
+
+## you could also fill by cases using `Cases (n)` in the fill option instead of `AR (per 10,000)`
+ggplot() +
+  # shapefile as polygon
+  geom_sf(data = mapsub_reduced, aes(fill = categories), col = "grey50") + 
+  # needed to avoid gridlines being drawn
+  coord_sf(datum = NA) + 
+  # add a scalebar
+  annotation_scale() + 
+  # color the scale to be perceptually uniform 
+  # drop FALSE keeps all levels 
+  # name allows you to change the legend title 
+  scale_fill_brewer(drop = FALSE, palette = "OrRd", name = "AR (per 10,000)") + 
+  # label polygons
+  geom_sf_text(data = mapsub_reduced, aes(label =  name_en), colour = "black", size = 4) + 
+  # remove coordinates and axes
+  theme_void() +
+  labs(captions = str_glue("Source: MSF data until {reporting_week}"))
+
+```
+
+Attack rate by commune for the past 4 weeks
+
+```{r choropleth_maps_commune_past4, message = FALSE, warning = FALSE, echo = FALSE}
+
+## Create a categories of ARs by sous prefecture ----------------------------------------
+
+# define maximum
+max_ar_past4    <- max(ar_commune_past4$`Upper 95%CI`, na.rm = TRUE) # define your highest AR
+
+# create groups - one group will be 0 only, then up to 4 more groups evenly
+# divided to maximum
+breakers_past4 <- as.integer(c(0, 5,20,50,100))
+
+## create a categorical variable using the age_categories function 
+## (we aren't using ages - but it functions the same way!)
+ar_map_commune_past4 <- mutate(ar_commune_past4, 
+             categories = age_categories(`AR (per 10,000)`, 
+                                         breakers = breakers_past4))
+
+
+
+## Join table to shapefile -----------------------------------------------------
+mapsub <- left_join(map_commune, ar_map_commune_past4, by = c("name_en" = "Commune"))
+
+
+## Reduce the number of SP on the map
+
+mapsub_reduced_past4 <- mapsub %>% 
+  filter(admin2_en %in% c("markounda", "batangafo", "nana_bakassa", "bossangoa"))
+
+
+
+## Plot cases or AR by geography -----------------------------------------------
+
+## you could also fill by cases using `Cases (n)` in the fill option instead of `AR (per 10,000)`
+ggplot() +
+  # shapefile as polygon
+  geom_sf(data = mapsub_reduced_past4, aes(fill = categories), col = "grey50") + 
+  # needed to avoid gridlines being drawn
+  coord_sf(datum = NA) + 
+  # add a scalebar
+  annotation_scale() + 
+  # color the scale to be perceptually uniform 
+  # drop FALSE keeps all levels 
+  # name allows you to change the legend title 
+  scale_fill_brewer(drop = FALSE, palette = "OrRd", name = "AR (per 10,000)") + 
+  # label polygons
+  geom_sf_text(data = mapsub_reduced_past4, aes(label =  name_en), colour = "black", size = 4) + 
+  # remove coordinates and axes
+  theme_void() +
+  labs(captions = str_glue("Source: MSF data from {four_weeks_earlier} to {reporting_week}")) 
+
+```
+
